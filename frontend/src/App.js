@@ -27,6 +27,7 @@ import PrivacyPolicy from './components/PrivacyPolicy';
 import TermsOfService from './components/TermsOfService';
 import Contact from './components/Contact';
 import ApiDocs from './components/ApiDocs';
+import AICenter from './components/AICenter';
 
 const API_URL = 'http://localhost:3001/api';
 
@@ -164,6 +165,7 @@ function App() {
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
   const [notificationCount, setNotificationCount] = useState(0);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [wsAlerts, setWsAlerts] = useState([]);
 
   useEffect(() => {
     document.body.setAttribute('data-theme', theme);
@@ -207,6 +209,25 @@ function App() {
     return () => clearInterval(interval);
   }, [user]);
 
+  // WebSocket real-time alerts
+  useEffect(() => {
+    if (!user) return;
+    const token = localStorage.getItem('token');
+    const ws = new WebSocket(`ws://localhost:3001/ws${token ? '?token=' + token : ''}`);
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'equipment:alert' || msg.type === 'ALERT') {
+          const alert = msg.data || msg.payload;
+          setWsAlerts(prev => [{ ...alert, id: Date.now(), dismissed: false }, ...prev.slice(0, 4)]);
+          setNotificationCount(prev => prev + 1);
+        }
+      } catch (err) { /* ignore parse errors */ }
+    };
+    ws.onerror = () => {}; // silent fail if WS unavailable
+    return () => ws.close();
+  }, [user]);
+
   const handleLogin = (userData, token) => {
     localStorage.setItem('token', token);
     setUser(userData);
@@ -246,6 +267,25 @@ function App() {
     <ThemeContext.Provider value={{ theme, setTheme: handleThemeChange }}>
       <UserContext.Provider value={{ user, setUser }}>
         <Router>
+          {/* Real-time WebSocket alert toasts */}
+          {wsAlerts.filter(a => !a.dismissed).length > 0 && (
+            <div style={{ position: 'fixed', top: '16px', right: '16px', zIndex: 9999, display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: '360px' }}>
+              {wsAlerts.filter(a => !a.dismissed).map(alert => (
+                <div key={alert.id} style={{
+                  background: alert.risk_level === 'Critical' ? '#7f1d1d' : '#7c2d12',
+                  border: '1px solid #f87171', borderRadius: '8px', padding: '12px 16px',
+                  color: '#fff', boxShadow: '0 4px 12px rgba(0,0,0,0.4)'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong style={{ color: '#fca5a5' }}>{alert.risk_level} Equipment Alert</strong>
+                    <button onClick={() => setWsAlerts(prev => prev.map(a => a.id === alert.id ? { ...a, dismissed: true } : a))}
+                      style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '16px' }}>×</button>
+                  </div>
+                  <div style={{ fontSize: '13px', marginTop: '4px' }}>{alert.message || alert.equipment_name}</div>
+                </div>
+              ))}
+            </div>
+          )}
           {showOnboarding && user && (
             <Onboarding onComplete={() => {
               setShowOnboarding(false);
@@ -278,6 +318,7 @@ function App() {
             <Route path="/terms-of-service" element={protectedRoute(TermsOfService)} />
             <Route path="/contact" element={protectedRoute(Contact)} />
             <Route path="/api-docs" element={protectedRoute(ApiDocs)} />
+            <Route path="/ai-center" element={protectedRoute(AICenter)} />
             <Route path="*" element={<Navigate to={user ? "/dashboard" : "/login"} replace />} />
           </Routes>
         </Router>

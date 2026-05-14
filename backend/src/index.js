@@ -15,6 +15,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 const pool = require('./db');
 const initDatabase = require('./initDb');
 const openRouterService = require('./services/openRouterService');
+const { sendPasswordReset } = require('./services/emailService');
 
 const app = express();
 const server = http.createServer(app);
@@ -44,10 +45,24 @@ const authLimiter = rateLimit({
   message: { error: 'Too many auth attempts, please try again later.' }
 });
 
+// AI-specific rate limiter (20 requests per hour)
+const aiLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  message: { error: 'AI rate limit exceeded. Max 20 requests per hour.' }
+});
+
 app.use('/api/', generalLimiter);
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
+// Apply AI rate limiter to all AI-intensive endpoints
+app.use('/api/equipment/:id/predict', aiLimiter);
+app.use('/api/routes/:id/optimize', aiLimiter);
+app.use('/api/safety/:id/predict', aiLimiter);
+app.use('/api/assembly/:id/optimize', aiLimiter);
+app.use('/api/supply-chain/:id/analyze', aiLimiter);
+app.use('/api/safety/cluster-analysis', aiLimiter);
 
 // Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
@@ -201,8 +216,9 @@ app.post('/api/auth/forgot-password',
         'INSERT INTO password_resets (user_id, token, expires_at) VALUES ($1,$2,$3)',
         [user.rows[0].id, token, expiresAt]
       );
-      // In production, send email here
+      // Send password reset email
       console.log(`Password reset token for ${email}: ${token}`);
+      try { await sendPasswordReset(email, token); } catch (e) { console.error('Email send failed:', e.message); }
       res.json({ message: 'If email exists, reset link sent', token }); // token returned for demo
     } catch (error) {
       res.status(500).json({ error: 'Server error' });
@@ -780,20 +796,7 @@ app.delete('/api/equipment/:id', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/equipment/:id/predict', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM equipment WHERE id = $1', [req.params.id]);
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Equipment not found' });
-    const equipment = result.rows[0];
-    const prediction = await openRouterService.predictMaintenance(equipment);
-    await pool.query('UPDATE equipment SET ai_prediction = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      [prediction.analysis, req.params.id]);
-    res.json(prediction);
-  } catch (error) {
-    console.error('Prediction error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+// NOTE: Full equipment predict with WebSocket alerts is defined in the new endpoints section below.
 
 // =====================
 // ROUTES (Route Optimizer)
@@ -977,6 +980,43 @@ app.post('/api/safety/:id/predict', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/safety/cluster-analysis — AI pattern recognition across incidents
+app.post('/api/safety/cluster-analysis', authenticateToken, async (req, res) => {
+  try {
+    const incidentsResult = await pool.query(`
+      SELECT location, incident_type, severity, COUNT(*) as count
+      FROM safety_incidents
+      WHERE created_at >= NOW() - INTERVAL '90 days'
+      GROUP BY location, incident_type, severity
+      ORDER BY count DESC
+    `);
+    const incidents = incidentsResult.rows;
+    const systemPrompt = `You are a manufacturing safety analyst specializing in incident pattern recognition.
+Analyze safety incident patterns and identify hotspots and trends.
+Return ONLY valid JSON with this exact structure:
+{ "patterns": [{"location": string, "incident_type": string, "count": number, "risk_level": string}], "hotspot_locations": [string], "recommendations": [string], "trend": "improving|stable|worsening" }`;
+    const userPrompt = `Analyze these manufacturing safety incident patterns from the past 90 days:\n${JSON.stringify(incidents, null, 2)}\n\nReturn JSON analysis.`;
+
+    const aiResult = await openRouterService.makeRequest(
+      [{ role: 'user', content: userPrompt }],
+      systemPrompt
+    );
+    const rawText = aiResult.choices[0].message.content;
+    let parsed = null;
+    try { parsed = JSON.parse(rawText); } catch (e) {
+      const stripped = rawText.replace(/```(?:json)?\n?/g, '').replace(/```/g, '').trim();
+      try { parsed = JSON.parse(stripped); } catch (e2) {
+        const s = rawText.indexOf('{'); const e3 = rawText.lastIndexOf('}');
+        if (s !== -1 && e3 !== -1) { try { parsed = JSON.parse(rawText.slice(s, e3 + 1)); } catch (e4) {} }
+      }
+    }
+    res.json({ raw_incidents: incidents, analysis: parsed || rawText, model: aiResult.model });
+  } catch (error) {
+    console.error('Cluster analysis error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // =====================
 // ASSEMBLY LINES ROUTES
 // =====================
@@ -1061,6 +1101,25 @@ app.post('/api/assembly/:id/optimize', authenticateToken, async (req, res) => {
     const optimization = await openRouterService.optimizeAssemblyLine(line);
     await pool.query('UPDATE assembly_lines SET ai_optimization = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
       [optimization.optimization, req.params.id]);
+
+    // Emit production:update WebSocket event when quality check reveals issues (efficiency < 80%)
+    if (line.efficiency < 80) {
+      broadcast({
+        type: 'production:update',
+        data: {
+          event: 'quality_check_failed',
+          line_id: line.id,
+          line_name: line.name,
+          product: line.product,
+          efficiency: line.efficiency,
+          bottleneck: line.bottleneck,
+          message: `Quality check: ${line.name} running at ${line.efficiency}% efficiency — below 80% threshold`,
+          optimization_preview: (optimization.optimization || '').substring(0, 200),
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
+
     res.json(optimization);
   } catch (error) {
     console.error('Assembly optimization error:', error);
@@ -1160,6 +1219,512 @@ app.post('/api/supply-chain/:id/analyze', authenticateToken, async (req, res) =>
 });
 
 // =====================
+// WEBSOCKET-CONNECTED AI ENDPOINTS
+// =====================
+
+// Equipment failure prediction — emits equipment:alert via WebSocket when risk is High/Critical
+app.post('/api/equipment/:id/predict', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM equipment WHERE id = $1', [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Equipment not found' });
+    const equipment = result.rows[0];
+    const prediction = await openRouterService.predictMaintenance(equipment);
+    await pool.query('UPDATE equipment SET ai_prediction = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      [prediction.analysis, req.params.id]);
+
+    // Detect risk level from AI response and emit WebSocket alert
+    const analysisText = prediction.analysis || '';
+    const riskMatch = analysisText.match(/Risk[^:]*:\s*(Low|Medium|High|Critical)/i) ||
+                      analysisText.match(/\b(Critical|High|Medium|Low)\b/i);
+    const riskLevel = riskMatch ? riskMatch[1] : 'Unknown';
+
+    if (riskLevel === 'High' || riskLevel === 'Critical') {
+      const alertPayload = {
+        type: 'equipment:alert',
+        data: {
+          equipment_id: equipment.id,
+          equipment_name: equipment.name,
+          location: equipment.location,
+          risk_level: riskLevel,
+          failure_probability: equipment.failure_probability,
+          message: `${riskLevel} failure risk detected for ${equipment.name} at ${equipment.location}`,
+          analysis_preview: analysisText.substring(0, 300),
+          timestamp: new Date().toISOString()
+        }
+      };
+      broadcast(alertPayload);
+
+      // Also persist as a notification for all users
+      await pool.query(
+        'INSERT INTO notifications (title, message, type, severity, related_entity, related_id, user_id) SELECT $1,$2,$3,$4,$5,$6,id FROM users WHERE role = $7',
+        [
+          `${riskLevel} Equipment Alert: ${equipment.name}`,
+          `AI predicts ${riskLevel} failure risk for ${equipment.name} (${equipment.location}). Failure probability: ${equipment.failure_probability}%.`,
+          'alert',
+          riskLevel.toLowerCase(),
+          'equipment',
+          equipment.id,
+          'admin'
+        ]
+      );
+    }
+
+    res.json({ ...prediction, riskLevel, websocketAlertSent: riskLevel === 'High' || riskLevel === 'Critical' });
+  } catch (error) {
+    console.error('Prediction error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// =====================
+// CRON: PREDICT EQUIPMENT FAILURES
+// =====================
+// POST /api/cron/predict-failures
+// Runs AI failure analysis on all equipment and sends alerts for high-risk items.
+// Intended to be called by a scheduler (e.g., cron job or external trigger).
+const aiCronLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour window
+  max: 10,
+  message: { error: 'Cron rate limit exceeded.' }
+});
+
+app.post('/api/cron/predict-failures', authenticateToken, aiCronLimiter, async (req, res) => {
+  try {
+    const threshold = parseFloat(req.body.failure_threshold) || 30.0;
+    const equipmentResult = await pool.query(
+      'SELECT * FROM equipment WHERE failure_probability >= $1 OR status = $2 ORDER BY failure_probability DESC',
+      [threshold, 'warning']
+    );
+
+    const equipment_list = equipmentResult.rows;
+    if (equipment_list.length === 0) {
+      return res.json({ message: 'No high-risk equipment found', threshold, processed: 0, alerts_sent: 0 });
+    }
+
+    const results = [];
+    let alertsSent = 0;
+
+    for (const equipment of equipment_list) {
+      const prediction = await openRouterService.predictMaintenance(equipment);
+
+      // Persist prediction
+      await pool.query(
+        'UPDATE equipment SET ai_prediction = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        [prediction.analysis, equipment.id]
+      );
+
+      const analysisText = prediction.analysis || '';
+      const riskMatch = analysisText.match(/Risk[^:]*:\s*(Low|Medium|High|Critical)/i) ||
+                        analysisText.match(/\b(Critical|High|Medium|Low)\b/i);
+      const riskLevel = riskMatch ? riskMatch[1] : 'Unknown';
+
+      if (riskLevel === 'High' || riskLevel === 'Critical') {
+        // Broadcast real-time alert
+        broadcast({
+          type: 'equipment:alert',
+          data: {
+            equipment_id: equipment.id,
+            equipment_name: equipment.name,
+            location: equipment.location,
+            risk_level: riskLevel,
+            failure_probability: equipment.failure_probability,
+            message: `[CRON] ${riskLevel} failure risk: ${equipment.name}`,
+            timestamp: new Date().toISOString()
+          }
+        });
+
+        // Notify admin users
+        await pool.query(
+          'INSERT INTO notifications (title, message, type, severity, related_entity, related_id, user_id) SELECT $1,$2,$3,$4,$5,$6,id FROM users WHERE role = $7',
+          [
+            `[Cron] ${riskLevel} Failure Risk: ${equipment.name}`,
+            `Scheduled failure scan: ${equipment.name} at ${equipment.location} has ${riskLevel} failure risk (probability: ${equipment.failure_probability}%).`,
+            'alert',
+            riskLevel.toLowerCase(),
+            'equipment',
+            equipment.id,
+            'admin'
+          ]
+        );
+        alertsSent++;
+      }
+
+      results.push({
+        equipment_id: equipment.id,
+        name: equipment.name,
+        failure_probability: equipment.failure_probability,
+        risk_level: riskLevel,
+        alert_sent: riskLevel === 'High' || riskLevel === 'Critical'
+      });
+    }
+
+    res.json({
+      message: 'Equipment failure prediction scan complete',
+      threshold,
+      processed: equipment_list.length,
+      alerts_sent: alertsSent,
+      results
+    });
+  } catch (error) {
+    console.error('Predict failures cron error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// =====================
+// QUALITY TRENDS
+// =====================
+// GET /api/quality/trends — defect rates by product/line/shift with AI commentary
+app.get('/api/quality/trends', authenticateToken, async (req, res) => {
+  try {
+    const { days = 30 } = req.query;
+    const windowDays = Math.min(parseInt(days) || 30, 365);
+    const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+
+    // Aggregate assembly line performance as a quality proxy
+    const lineStats = await pool.query(`
+      SELECT
+        al.id,
+        al.name AS line_name,
+        al.product,
+        al.capacity,
+        al.current_output,
+        al.efficiency,
+        al.workers,
+        al.stations,
+        al.bottleneck,
+        al.status,
+        ROUND(100.0 - al.efficiency, 2) AS defect_rate_estimate,
+        al.updated_at
+      FROM assembly_lines al
+      ORDER BY al.efficiency ASC
+    `);
+
+    // Aggregate shift data
+    const shiftStats = await pool.query(`
+      SELECT
+        department,
+        COUNT(*) AS total_shifts,
+        AVG(workers_assigned) AS avg_workers,
+        status
+      FROM shifts
+      GROUP BY department, status
+      ORDER BY department
+    `);
+
+    // Build summary for AI
+    const qualityData = {
+      period_days: windowDays,
+      assembly_lines: lineStats.rows.map(row => ({
+        line: row.line_name,
+        product: row.product,
+        efficiency_pct: row.efficiency,
+        defect_rate_estimate_pct: row.defect_rate_estimate,
+        output_vs_capacity: `${row.current_output}/${row.capacity}`,
+        bottleneck: row.bottleneck || 'None',
+        status: row.status
+      })),
+      shift_summary: shiftStats.rows,
+      worst_performing_lines: lineStats.rows
+        .filter(r => r.efficiency < 80)
+        .map(r => ({ line: r.line_name, product: r.product, efficiency: r.efficiency }))
+    };
+
+    const systemPrompt = `You are a manufacturing quality assurance AI. Analyze production quality trends and provide actionable insights.
+    Format your response with sections: Quality Overview, Top Defect Risks, Line-Level Findings, Shift-Level Patterns, and Recommended Corrective Actions.`;
+
+    const prompt = `Analyze these manufacturing quality trends and provide commentary:
+    ${JSON.stringify(qualityData, null, 2)}`;
+
+    let aiCommentary = null;
+    let aiError = null;
+    try {
+      const aiResult = await openRouterService.makeRequest(
+        [{ role: 'user', content: prompt }],
+        systemPrompt
+      );
+      aiCommentary = aiResult.choices[0].message.content;
+    } catch (aiErr) {
+      aiError = 'AI commentary unavailable';
+      console.error('Quality trends AI error:', aiErr.message);
+    }
+
+    res.json({
+      period_days: windowDays,
+      generated_at: new Date().toISOString(),
+      assembly_line_stats: lineStats.rows,
+      shift_stats: shiftStats.rows,
+      summary: {
+        total_lines: lineStats.rows.length,
+        lines_below_80pct_efficiency: lineStats.rows.filter(r => r.efficiency < 80).length,
+        avg_efficiency: lineStats.rows.length
+          ? (lineStats.rows.reduce((s, r) => s + parseFloat(r.efficiency || 0), 0) / lineStats.rows.length).toFixed(2)
+          : null
+      },
+      ai_commentary: aiCommentary,
+      ai_error: aiError
+    });
+  } catch (error) {
+    console.error('Quality trends error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// =====================
+// SUPPLIER PERFORMANCE SCORING
+// =====================
+// GET /api/suppliers/:id/score — on-time delivery rate, defect rate, AI vendor risk assessment
+app.get('/api/suppliers/:id/score', authenticateToken, async (req, res) => {
+  try {
+    const supplierId = req.params.id;
+
+    // Find all supply chain records for this supplier (by id or name)
+    // Supports both numeric id and supplier name as the identifier
+    let supplierQuery;
+    let supplierItems;
+
+    if (!isNaN(supplierId)) {
+      supplierQuery = await pool.query('SELECT * FROM supply_chain WHERE id = $1', [supplierId]);
+      if (supplierQuery.rows.length === 0) return res.status(404).json({ error: 'Supplier record not found' });
+      const supplierName = supplierQuery.rows[0].supplier;
+      supplierItems = await pool.query(
+        'SELECT * FROM supply_chain WHERE supplier ILIKE $1 ORDER BY created_at DESC',
+        [supplierName]
+      );
+    } else {
+      // Treat as supplier name
+      supplierItems = await pool.query(
+        'SELECT * FROM supply_chain WHERE supplier ILIKE $1 ORDER BY created_at DESC',
+        [`%${supplierId}%`]
+      );
+      if (supplierItems.rows.length === 0) return res.status(404).json({ error: 'No records found for this supplier' });
+    }
+
+    const items = supplierItems.rows;
+    const supplierName = items[0].supplier;
+
+    // Compute performance metrics
+    const totalOrders = items.length;
+    const deliveredOrders = items.filter(i => i.status === 'delivered').length;
+    const inTransit = items.filter(i => i.status === 'in_transit').length;
+    const inCustoms = items.filter(i => i.status === 'customs').length;
+    const delayedOrders = items.filter(i => {
+      if (!i.estimated_arrival || i.status === 'delivered') return false;
+      return new Date(i.estimated_arrival) < new Date();
+    }).length;
+
+    const onTimeDeliveryRate = totalOrders > 0
+      ? ((deliveredOrders / totalOrders) * 100).toFixed(1)
+      : 0;
+
+    const delayRate = totalOrders > 0
+      ? ((delayedOrders / totalOrders) * 100).toFixed(1)
+      : 0;
+
+    const totalQuantityOrdered = items.reduce((s, i) => s + (i.quantity || 0), 0);
+
+    const performanceMetrics = {
+      supplier: supplierName,
+      total_orders: totalOrders,
+      delivered: deliveredOrders,
+      in_transit: inTransit,
+      in_customs: inCustoms,
+      delayed: delayedOrders,
+      on_time_delivery_rate_pct: parseFloat(onTimeDeliveryRate),
+      delay_rate_pct: parseFloat(delayRate),
+      total_quantity_ordered: totalQuantityOrdered,
+      items: items.map(i => ({
+        item_name: i.item_name,
+        status: i.status,
+        estimated_arrival: i.estimated_arrival,
+        quantity: i.quantity,
+        tracking_number: i.tracking_number
+      }))
+    };
+
+    // AI vendor risk assessment
+    const systemPrompt = `You are a supply chain risk AI analyst. Evaluate supplier performance and provide a vendor risk assessment.
+    Format your response with: Vendor Risk Score (1-10, where 10 is highest risk), Performance Analysis, Key Risk Factors, Recommendations, and Overall Risk Level (Low/Medium/High/Critical).`;
+
+    const prompt = `Evaluate this supplier's performance and provide a risk assessment:
+    ${JSON.stringify(performanceMetrics, null, 2)}`;
+
+    let aiAssessment = null;
+    let aiError = null;
+    let riskScore = null;
+    try {
+      const aiResult = await openRouterService.makeRequest(
+        [{ role: 'user', content: prompt }],
+        systemPrompt
+      );
+      aiAssessment = aiResult.choices[0].message.content;
+
+      // Extract risk score
+      const scoreMatch = aiAssessment.match(/Vendor Risk Score[:\s]*(\d+(?:\.\d+)?)\s*(?:\/\s*10)?/i);
+      riskScore = scoreMatch ? parseFloat(scoreMatch[1]) : null;
+    } catch (aiErr) {
+      aiError = 'AI assessment unavailable';
+      console.error('Supplier scoring AI error:', aiErr.message);
+    }
+
+    res.json({
+      ...performanceMetrics,
+      risk_score: riskScore,
+      ai_assessment: aiAssessment,
+      ai_error: aiError,
+      generated_at: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Supplier scoring error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// =====================
+// SHIFT HANDOFF REPORT
+// =====================
+// POST /api/reports/shift-handoff — AI summary of the shift formatted for the next shift
+app.post('/api/reports/shift-handoff', authenticateToken, async (req, res) => {
+  try {
+    const { shift_id, shift_name, department } = req.body;
+
+    // Get shift details
+    let shiftData = null;
+    if (shift_id) {
+      const shiftResult = await pool.query('SELECT * FROM shifts WHERE id = $1', [shift_id]);
+      shiftData = shiftResult.rows[0] || null;
+    }
+
+    // Gather production data (assembly lines)
+    let assemblyData;
+    if (department) {
+      assemblyData = await pool.query(
+        'SELECT name, product, capacity, current_output, efficiency, workers, stations, bottleneck, status FROM assembly_lines WHERE department ILIKE $1 OR name ILIKE $1 ORDER BY efficiency ASC',
+        [`%${department}%`]
+      );
+    } else {
+      assemblyData = await pool.query(
+        'SELECT name, product, capacity, current_output, efficiency, workers, stations, bottleneck, status FROM assembly_lines ORDER BY efficiency ASC'
+      );
+    }
+
+    // Gather equipment status (any in warning or critical)
+    const equipmentAlerts = await pool.query(`
+      SELECT name, type, location, status, temperature, vibration, failure_probability, ai_prediction
+      FROM equipment
+      WHERE status != 'operational' OR failure_probability > 40
+      ORDER BY failure_probability DESC
+      LIMIT 10
+    `);
+
+    // Gather recent safety incidents (created today)
+    const safetyIncidents = await pool.query(`
+      SELECT title, description, location, severity, incident_type, status, risk_score
+      FROM safety_incidents
+      WHERE created_at >= NOW() - INTERVAL '12 hours'
+      ORDER BY risk_score DESC NULLS LAST
+    `);
+
+    // Gather unresolved notifications
+    const pendingAlerts = await pool.query(`
+      SELECT title, message, severity, related_entity, created_at
+      FROM notifications
+      WHERE read = false AND created_at >= NOW() - INTERVAL '12 hours'
+      ORDER BY created_at DESC
+      LIMIT 10
+    `);
+
+    const handoffContext = {
+      shift: shiftData || { name: shift_name || 'Current Shift', department: department || 'All Departments' },
+      report_generated_at: new Date().toISOString(),
+      production_summary: {
+        total_lines: assemblyData.rows.length,
+        avg_efficiency: assemblyData.rows.length
+          ? (assemblyData.rows.reduce((s, r) => s + parseFloat(r.efficiency || 0), 0) / assemblyData.rows.length).toFixed(1)
+          : 0,
+        lines: assemblyData.rows
+      },
+      equipment_alerts: {
+        count: equipmentAlerts.rows.length,
+        items: equipmentAlerts.rows.map(e => ({
+          name: e.name,
+          location: e.location,
+          status: e.status,
+          failure_probability: e.failure_probability,
+          temperature: e.temperature
+        }))
+      },
+      safety_incidents: {
+        count: safetyIncidents.rows.length,
+        incidents: safetyIncidents.rows
+      },
+      pending_notifications: pendingAlerts.rows.length,
+      unresolved_items: pendingAlerts.rows
+    };
+
+    const systemPrompt = `You are a manufacturing operations AI assistant. Generate a concise, professional shift handoff report.
+    Format the report for the incoming shift team with these sections:
+    1. Shift Summary (brief overview of what happened)
+    2. Production Status (key metrics and any shortfalls)
+    3. Equipment Issues (what needs immediate attention)
+    4. Safety Incidents (anything reported this shift)
+    5. Priority Actions for Next Shift (top 3-5 action items)
+    6. Notes & Handoff Items (anything the next shift should know)
+    Keep it scannable and actionable. Use bullet points where appropriate.`;
+
+    const prompt = `Generate a shift handoff report based on this data:
+    ${JSON.stringify(handoffContext, null, 2)}`;
+
+    let report = null;
+    let aiError = null;
+    try {
+      const aiResult = await openRouterService.makeRequest(
+        [{ role: 'user', content: prompt }],
+        systemPrompt
+      );
+      report = aiResult.choices[0].message.content;
+    } catch (aiErr) {
+      aiError = 'AI report generation unavailable';
+      // Fallback text report
+      report = `## Shift Handoff Report — ${new Date().toLocaleString()}\n\n` +
+        `### Production Status\n` +
+        assemblyData.rows.map(l => `- ${l.name}: ${l.efficiency}% efficiency, ${l.current_output}/${l.capacity} units${l.bottleneck ? ` (bottleneck: ${l.bottleneck})` : ''}`).join('\n') +
+        `\n\n### Equipment Alerts\n` +
+        (equipmentAlerts.rows.length > 0
+          ? equipmentAlerts.rows.map(e => `- ${e.name} (${e.location}): ${e.status}, failure risk ${e.failure_probability}%`).join('\n')
+          : 'No equipment alerts') +
+        `\n\n### Safety Incidents\n` +
+        (safetyIncidents.rows.length > 0
+          ? safetyIncidents.rows.map(i => `- [${i.severity.toUpperCase()}] ${i.title} at ${i.location}`).join('\n')
+          : 'No safety incidents this shift');
+      console.error('Shift handoff AI error:', aiErr.message);
+    }
+
+    // Emit shift handoff via WebSocket
+    broadcast({
+      type: 'production:update',
+      data: {
+        event: 'shift_handoff',
+        shift: handoffContext.shift,
+        timestamp: new Date().toISOString(),
+        summary: report ? report.substring(0, 300) + '...' : 'Shift handoff report generated'
+      }
+    });
+
+    res.json({
+      shift: handoffContext.shift,
+      report,
+      context: handoffContext,
+      ai_error: aiError,
+      generated_at: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Shift handoff report error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// =====================
 // GLOBAL SEARCH
 // =====================
 app.get('/api/search', authenticateToken, async (req, res) => {
@@ -1231,6 +1796,7 @@ app.get('/api/export/:type', authenticateToken, async (req, res) => {
 // SEED SAMPLE DATA ROUTES
 // =====================
 app.post('/api/seed/equipment', authenticateToken, async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(403).json({ error: 'Seeding not allowed in production' });
   try {
     await pool.query(`
       INSERT INTO equipment (name, type, location, status, last_maintenance, next_maintenance, temperature, vibration, runtime_hours, failure_probability) VALUES
@@ -1251,6 +1817,7 @@ app.post('/api/seed/equipment', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/seed/routes', authenticateToken, async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(403).json({ error: 'Seeding not allowed in production' });
   try {
     await pool.query(`
       INSERT INTO routes (name, origin, destination, distance, estimated_time, vehicle_type, priority, status, waypoints) VALUES
@@ -1271,6 +1838,7 @@ app.post('/api/seed/routes', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/seed/safety', authenticateToken, async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(403).json({ error: 'Seeding not allowed in production' });
   try {
     await pool.query(`
       INSERT INTO safety_incidents (title, description, location, severity, incident_type, reported_by, status, risk_score) VALUES
@@ -1291,6 +1859,7 @@ app.post('/api/seed/safety', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/seed/assembly', authenticateToken, async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(403).json({ error: 'Seeding not allowed in production' });
   try {
     await pool.query(`
       INSERT INTO assembly_lines (name, product, capacity, current_output, efficiency, workers, stations, bottleneck, status) VALUES
@@ -1311,6 +1880,7 @@ app.post('/api/seed/assembly', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/seed/supply-chain', authenticateToken, async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(403).json({ error: 'Seeding not allowed in production' });
   try {
     await pool.query(`
       INSERT INTO supply_chain (item_name, supplier, origin_location, current_location, destination, quantity, status, estimated_arrival, tracking_number) VALUES
@@ -1331,6 +1901,7 @@ app.post('/api/seed/supply-chain', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/seed/notifications', authenticateToken, async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(403).json({ error: 'Seeding not allowed in production' });
   try {
     await pool.query(`
       INSERT INTO notifications (title, message, type, severity, related_entity, related_id, user_id) VALUES
@@ -1358,6 +1929,7 @@ app.post('/api/seed/notifications', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/seed/shifts', authenticateToken, async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(403).json({ error: 'Seeding not allowed in production' });
   try {
     await pool.query(`
       INSERT INTO shifts (name, supervisor, start_time, end_time, department, workers_assigned, status, notes) VALUES
@@ -1386,6 +1958,7 @@ app.post('/api/seed/shifts', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/seed/feedback', authenticateToken, async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(403).json({ error: 'Seeding not allowed in production' });
   try {
     await pool.query(`
       INSERT INTO feedback (user_id, user_email, type, subject, message, rating, status) VALUES
@@ -1414,6 +1987,7 @@ app.post('/api/seed/feedback', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/seed/audit-logs', authenticateToken, async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(403).json({ error: 'Seeding not allowed in production' });
   try {
     await pool.query(`
       INSERT INTO audit_logs (user_id, user_email, action, entity_type, entity_id, details, ip_address) VALUES
@@ -1515,6 +2089,60 @@ function broadcast(data) {
 }
 
 // =====================
+// AI MECHANICAL-BACKLOG ENDPOINTS
+// =====================
+
+// POST /api/ai/quality-defect-prediction
+app.post('/api/ai/quality-defect-prediction', authenticateToken, aiLimiter, async (req, res) => {
+  try {
+    const { product, batch_size, defect_history, inspection_results, process_params } = req.body || {};
+    if (!product) return res.status(400).json({ error: 'product is required' });
+    const result = await openRouterService.predictQualityDefects({
+      product, batch_size, defect_history, inspection_results, process_params
+    });
+    res.json(result);
+  } catch (err) {
+    const code = err.statusCode || 500;
+    console.error('quality-defect-prediction error:', err.message);
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// POST /api/ai/oee-anomaly-detection
+app.post('/api/ai/oee-anomaly-detection', authenticateToken, aiLimiter, async (req, res) => {
+  try {
+    const { line_id, availability, performance, quality, telemetry, history } = req.body || {};
+    if (availability == null && performance == null && quality == null) {
+      return res.status(400).json({ error: 'availability, performance, or quality is required' });
+    }
+    const result = await openRouterService.detectOEEAnomalies({
+      line_id, availability, performance, quality, telemetry, history
+    });
+    res.json(result);
+  } catch (err) {
+    const code = err.statusCode || 500;
+    console.error('oee-anomaly-detection error:', err.message);
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// POST /api/ai/inventory-stockout-predict
+app.post('/api/ai/inventory-stockout-predict', authenticateToken, aiLimiter, async (req, res) => {
+  try {
+    const { sku, on_hand, lead_time_days, demand_history, pending_orders, safety_stock } = req.body || {};
+    if (!sku) return res.status(400).json({ error: 'sku is required' });
+    const result = await openRouterService.predictInventoryStockout({
+      sku, on_hand, lead_time_days, demand_history, pending_orders, safety_stock
+    });
+    res.json(result);
+  } catch (err) {
+    const code = err.statusCode || 500;
+    console.error('inventory-stockout-predict error:', err.message);
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// =====================
 // GLOBAL ERROR HANDLER
 // =====================
 app.use((err, req, res, next) => {
@@ -1527,3 +2155,24 @@ server.listen(PORT, () => {
   console.log(`Backend server running on port ${PORT}`);
   console.log(`WebSocket server running on ws://localhost:${PORT}/ws`);
 });
+
+// === BATCH 05 AUTO-MOUNT (custom feature suggestions) ===
+app.use('/api/ai/production-planner-agent', require('./routes/production-planner-agent'));
+app.use('/api/ai/vision-quality-inspect', require('./routes/vision-quality-inspect'));
+app.use('/api/ai/oee-anomaly-stream', require('./routes/oee-anomaly-stream'));
+app.use('/api/ai/digital-twin', require('./routes/digital-twin'));
+app.use('/api/ai/supplier-risk-monitor', require('./routes/supplier-risk-monitor'));
+
+// === Batch 05 Gaps & Frontend Mounts ===
+try { const _gap_ai_production_schedule_optimizer = require('./routes/gap-ai-production-schedule-optimizer'); app.use('/api/gap-ai-production-schedule-optimizer', _gap_ai_production_schedule_optimizer); } catch(e) { console.error('gap mount fail ai-production-schedule-optimizer:', e.message); }
+try { const _gap_ai_energy_consumption_forecast = require('./routes/gap-ai-energy-consumption-forecast'); app.use('/api/gap-ai-energy-consumption-forecast', _gap_ai_energy_consumption_forecast); } catch(e) { console.error('gap mount fail ai-energy-consumption-forecast:', e.message); }
+try { const _gap_ai_maintenance_windowing = require('./routes/gap-ai-maintenance-windowing'); app.use('/api/gap-ai-maintenance-windowing', _gap_ai_maintenance_windowing); } catch(e) { console.error('gap mount fail ai-maintenance-windowing:', e.message); }
+try { const _gap_ai_workforce_skill_gap = require('./routes/gap-ai-workforce-skill-gap'); app.use('/api/gap-ai-workforce-skill-gap', _gap_ai_workforce_skill_gap); } catch(e) { console.error('gap mount fail ai-workforce-skill-gap:', e.message); }
+try { const _gap_nested = require('./routes/gap-nested'); app.use('/api/gap-nested', _gap_nested); } catch(e) { console.error('gap mount fail nested:', e.message); }
+try { const _gap_substantive = require('./routes/gap-substantive'); app.use('/api/gap-substantive', _gap_substantive); } catch(e) { console.error('gap mount fail substantive:', e.message); }
+try { const _gap_webhooks = require('./routes/gap-webhooks'); app.use('/api/gap-webhooks', _gap_webhooks); } catch(e) { console.error('gap mount fail webhooks:', e.message); }
+try { const _gap_real_time = require('./routes/gap-real-time'); app.use('/api/gap-real-time', _gap_real_time); } catch(e) { console.error('gap mount fail real-time:', e.message); }
+try { const _gap_mobile = require('./routes/gap-mobile'); app.use('/api/gap-mobile', _gap_mobile); } catch(e) { console.error('gap mount fail mobile:', e.message); }
+try { const _gap_customer_order_side = require('./routes/gap-customer-order-side'); app.use('/api/gap-customer-order-side', _gap_customer_order_side); } catch(e) { console.error('gap mount fail customer-order-side:', e.message); }
+try { const _gap_limited = require('./routes/gap-limited'); app.use('/api/gap-limited', _gap_limited); } catch(e) { console.error('gap mount fail limited:', e.message); }
+// === End Batch 05 Mounts ===

@@ -11,6 +11,10 @@ const EquipmentList = () => {
   const [equipment, setEquipment] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
+  const LIMIT = 20;
   const [formData, setFormData] = useState({
     name: '', type: '', location: '', status: 'operational',
     last_maintenance: '', next_maintenance: '', temperature: '',
@@ -18,13 +22,18 @@ const EquipmentList = () => {
   });
 
   useEffect(() => {
-    fetchEquipment();
-  }, []);
+    fetchEquipment(page);
+  }, [page]);
 
-  const fetchEquipment = async () => {
+  const fetchEquipment = async (p = 1) => {
     try {
-      const response = await axios.get(`${API_URL}/equipment`);
-      setEquipment(response.data.data || response.data);
+      const response = await axios.get(`${API_URL}/equipment?page=${p}&limit=${LIMIT}`);
+      const d = response.data;
+      setEquipment(d.data || d);
+      if (d.total !== undefined) {
+        setTotal(d.total);
+        setTotalPages(Math.ceil(d.total / LIMIT));
+      }
     } catch (error) {
       console.error('Error fetching equipment:', error);
     } finally {
@@ -42,7 +51,7 @@ const EquipmentList = () => {
         last_maintenance: '', next_maintenance: '', temperature: '',
         vibration: '', runtime_hours: '', failure_probability: ''
       });
-      fetchEquipment();
+      fetchEquipment(page);
     } catch (error) {
       console.error('Error creating equipment:', error);
     }
@@ -72,7 +81,7 @@ const EquipmentList = () => {
 
       <div className="data-section">
         <div className="section-header">
-          <h3>Equipment ({equipment.length})</h3>
+          <h3>Equipment ({total || equipment.length})</h3>
           <button className="btn-primary" onClick={() => setShowModal(true)}>
             + Add Equipment
           </button>
@@ -106,6 +115,13 @@ const EquipmentList = () => {
             ))}
           </tbody>
         </table>
+        {totalPages > 1 && (
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', padding: '16px' }}>
+            <button className="btn-secondary" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>Prev</button>
+            <span>Page {page} of {totalPages}</span>
+            <button className="btn-secondary" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}>Next</button>
+          </div>
+        )}
       </div>
 
       {showModal && (

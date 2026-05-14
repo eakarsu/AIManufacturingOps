@@ -5,11 +5,16 @@ require('dotenv').config({ path: path.resolve(__dirname, '../../../.env') });
 class OpenRouterService {
   constructor() {
     this.apiKey = process.env.OPENROUTER_API_KEY;
-    this.model = process.env.OPENROUTER_MODEL || 'anthropic/claude-haiku-4.5';
+    this.model = process.env.OPENROUTER_MODEL || 'anthropic/claude-3-5-sonnet-20241022';
     this.baseUrl = 'openrouter.ai';
   }
 
   async makeRequest(messages, systemPrompt) {
+    if (!this.apiKey) {
+      const e = new Error('AI provider not configured (OPENROUTER_API_KEY missing)');
+      e.statusCode = 503;
+      return Promise.reject(e);
+    }
     return new Promise((resolve, reject) => {
       const data = JSON.stringify({
         model: this.model,
@@ -373,6 +378,56 @@ class OpenRouterService {
 **Alternative Actions:**
 - Identify backup suppliers
 - Review safety stock levels`;
+  }
+
+  // Quality defect prediction (mechanical backlog)
+  async predictQualityDefects(payload) {
+    const systemPrompt = `You are an AI expert in manufacturing quality control and SPC.
+Given recent production / inspection data, return a JSON-style structured analysis.
+Provide:
+1. Defect risk level (Low/Medium/High/Critical)
+2. Most-likely defect modes
+3. Root-cause hypotheses
+4. Inspection-frequency recommendation
+5. Corrective actions ranked by impact`;
+    const userMessage = `Predict defects for this production batch:\n${JSON.stringify(payload, null, 2).slice(0, 3500)}`;
+    const response = await this.makeRequest([{ role: 'user', content: userMessage }], systemPrompt);
+    return {
+      success: true,
+      prediction: response.choices[0].message.content,
+      model: this.model,
+      usage: response.usage
+    };
+  }
+
+  // OEE anomaly detection (mechanical backlog)
+  async detectOEEAnomalies(payload) {
+    const systemPrompt = `You are an AI expert in OEE (Overall Equipment Effectiveness) and lean manufacturing.
+Compare current OEE components (Availability, Performance, Quality) against trend and identify anomalies.
+Provide a structured analysis with severity, contributing factor, and a recommended next-shift action.`;
+    const userMessage = `OEE / production telemetry:\n${JSON.stringify(payload, null, 2).slice(0, 3500)}`;
+    const response = await this.makeRequest([{ role: 'user', content: userMessage }], systemPrompt);
+    return {
+      success: true,
+      analysis: response.choices[0].message.content,
+      model: this.model,
+      usage: response.usage
+    };
+  }
+
+  // Inventory stockout prediction (mechanical backlog)
+  async predictInventoryStockout(payload) {
+    const systemPrompt = `You are an AI expert in inventory management and demand planning.
+Given SKU level, lead times, demand history, and pending orders, predict stockout risk.
+Return structured analysis with: stockout_risk (Low/Medium/High/Critical), days_to_stockout, recommended_reorder_quantity, alternative_actions.`;
+    const userMessage = `Inventory data:\n${JSON.stringify(payload, null, 2).slice(0, 3500)}`;
+    const response = await this.makeRequest([{ role: 'user', content: userMessage }], systemPrompt);
+    return {
+      success: true,
+      prediction: response.choices[0].message.content,
+      model: this.model,
+      usage: response.usage
+    };
   }
 }
 

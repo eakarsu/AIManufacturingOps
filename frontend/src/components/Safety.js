@@ -11,23 +11,46 @@ const SafetyList = () => {
   const [incidents, setIncidents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
+  const LIMIT = 20;
+  const [clusterLoading, setClusterLoading] = useState(false);
+  const [clusterAnalysis, setClusterAnalysis] = useState(null);
   const [formData, setFormData] = useState({
     title: '', description: '', location: '', severity: 'low',
     incident_type: '', reported_by: '', status: 'open', risk_score: ''
   });
 
   useEffect(() => {
-    fetchIncidents();
-  }, []);
+    fetchIncidents(page);
+  }, [page]);
 
-  const fetchIncidents = async () => {
+  const fetchIncidents = async (p = 1) => {
     try {
-      const response = await axios.get(`${API_URL}/safety`);
-      setIncidents(response.data.data || response.data);
+      const response = await axios.get(`${API_URL}/safety?page=${p}&limit=${LIMIT}`);
+      const d = response.data;
+      setIncidents(d.data || d);
+      if (d.total !== undefined) {
+        setTotal(d.total);
+        setTotalPages(Math.ceil(d.total / LIMIT));
+      }
     } catch (error) {
       console.error('Error fetching incidents:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const runClusterAnalysis = async () => {
+    setClusterLoading(true);
+    try {
+      const response = await axios.post(`${API_URL}/safety/cluster-analysis`);
+      setClusterAnalysis(response.data);
+    } catch (error) {
+      console.error('Error running cluster analysis:', error);
+    } finally {
+      setClusterLoading(false);
     }
   };
 
@@ -40,7 +63,7 @@ const SafetyList = () => {
         title: '', description: '', location: '', severity: 'low',
         incident_type: '', reported_by: '', status: 'open', risk_score: ''
       });
-      fetchIncidents();
+      fetchIncidents(page);
     } catch (error) {
       console.error('Error creating incident:', error);
     }
@@ -60,9 +83,74 @@ const SafetyList = () => {
         <p>Predict and prevent workplace safety incidents</p>
       </div>
 
+      <div className="data-section" style={{ marginBottom: '20px' }}>
+        <div className="section-header">
+          <h3>Pattern Analysis</h3>
+          <button className="btn-ai" onClick={runClusterAnalysis} disabled={clusterLoading}>
+            {clusterLoading ? 'Analyzing...' : 'Analyze Safety Patterns'}
+          </button>
+        </div>
+        {clusterAnalysis && clusterAnalysis.analysis && typeof clusterAnalysis.analysis === 'object' && (
+          <div className="ai-analysis-section">
+            <div className="ai-analysis-header">
+              <span className="ai-icon">🤖</span>
+              <h3>Safety Pattern Analysis</h3>
+              <span style={{
+                padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 600,
+                background: clusterAnalysis.analysis.trend === 'improving' ? '#166534' :
+                            clusterAnalysis.analysis.trend === 'worsening' ? '#7f1d1d' : '#713f12',
+                color: '#fff'
+              }}>
+                Trend: {clusterAnalysis.analysis.trend || 'Unknown'}
+              </span>
+            </div>
+            <div className="ai-analysis-content">
+              {clusterAnalysis.analysis.hotspot_locations && clusterAnalysis.analysis.hotspot_locations.length > 0 && (
+                <div style={{ marginBottom: '16px' }}>
+                  <strong>Hotspot Locations:</strong>
+                  <ul style={{ marginTop: '8px', paddingLeft: '20px' }}>
+                    {clusterAnalysis.analysis.hotspot_locations.map((loc, i) => (
+                      <li key={i} style={{ color: '#f87171' }}>{loc}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {clusterAnalysis.analysis.patterns && clusterAnalysis.analysis.patterns.length > 0 && (
+                <div style={{ marginBottom: '16px' }}>
+                  <strong>Incident Patterns:</strong>
+                  <table className="data-table" style={{ marginTop: '8px' }}>
+                    <thead><tr><th>Location</th><th>Type</th><th>Count</th><th>Risk Level</th></tr></thead>
+                    <tbody>
+                      {clusterAnalysis.analysis.patterns.map((p, i) => (
+                        <tr key={i}>
+                          <td>{p.location}</td>
+                          <td>{p.incident_type}</td>
+                          <td>{p.count}</td>
+                          <td className={`severity-${(p.risk_level || 'low').toLowerCase()}`}>{p.risk_level}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {clusterAnalysis.analysis.recommendations && clusterAnalysis.analysis.recommendations.length > 0 && (
+                <div>
+                  <strong>Recommendations:</strong>
+                  <ul style={{ marginTop: '8px', paddingLeft: '20px' }}>
+                    {clusterAnalysis.analysis.recommendations.map((rec, i) => (
+                      <li key={i} style={{ marginBottom: '4px' }}>{rec}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="data-section">
         <div className="section-header">
-          <h3>Safety Incidents ({incidents.length})</h3>
+          <h3>Safety Incidents ({total || incidents.length})</h3>
           <button className="btn-primary" onClick={() => setShowModal(true)}>
             + Report Incident
           </button>
@@ -96,6 +184,13 @@ const SafetyList = () => {
             ))}
           </tbody>
         </table>
+        {totalPages > 1 && (
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', padding: '16px' }}>
+            <button className="btn-secondary" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>Prev</button>
+            <span>Page {page} of {totalPages}</span>
+            <button className="btn-secondary" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}>Next</button>
+          </div>
+        )}
       </div>
 
       {showModal && (
