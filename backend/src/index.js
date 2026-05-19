@@ -19,7 +19,7 @@ const { sendPasswordReset } = require('./services/emailService');
 
 const app = express();
 const server = http.createServer(app);
-const PORT = process.env.BACKEND_PORT || 3001;
+const PORT = process.env.BACKEND_PORT || 4103;
 
 // In-memory cache for dashboard stats (60s TTL)
 const statsCache = new NodeCache({ stdTTL: 60 });
@@ -28,7 +28,7 @@ const statsCache = new NodeCache({ stdTTL: 60 });
 // SECURITY MIDDLEWARE
 // =====================
 app.use(helmet());
-app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
+app.use(cors({ origin: ['http://localhost:3000', 'http://localhost:4001'], credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 
 // General rate limiter
@@ -2142,14 +2142,6 @@ app.post('/api/ai/inventory-stockout-predict', authenticateToken, aiLimiter, asy
   }
 });
 
-// =====================
-// GLOBAL ERROR HANDLER
-// =====================
-app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ error: 'Internal server error' });
-});
-
 // Start server
 server.listen(PORT, () => {
   console.log(`Backend server running on port ${PORT}`);
@@ -2176,3 +2168,29 @@ try { const _gap_mobile = require('./routes/gap-mobile'); app.use('/api/gap-mobi
 try { const _gap_customer_order_side = require('./routes/gap-customer-order-side'); app.use('/api/gap-customer-order-side', _gap_customer_order_side); } catch(e) { console.error('gap mount fail customer-order-side:', e.message); }
 try { const _gap_limited = require('./routes/gap-limited'); app.use('/api/gap-limited', _gap_limited); } catch(e) { console.error('gap mount fail limited:', e.message); }
 // === End Batch 05 Mounts ===
+
+// =====================
+// CUSTOM VIEWS (mounted BEFORE 404 / error handler)
+// =====================
+try {
+  app.use('/api/custom-views', require('./routes/customViews'));
+  console.log('[mount] /api/custom-views ready');
+} catch (e) {
+  console.error('Failed to mount customViews:', e.message);
+}
+
+// =====================
+// 404 HANDLER (after all mounts)
+// =====================
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Not found', path: req.originalUrl });
+});
+
+// =====================
+// GLOBAL ERROR HANDLER (final)
+// =====================
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+// === End custom-views & terminal middleware ===

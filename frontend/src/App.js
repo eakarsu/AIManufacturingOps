@@ -28,8 +28,9 @@ import TermsOfService from './components/TermsOfService';
 import Contact from './components/Contact';
 import ApiDocs from './components/ApiDocs';
 import AICenter from './components/AICenter';
+import CustomViewsPage from './pages/CustomViewsPage';
 
-const API_URL = 'http://localhost:3001/api';
+const API_URL = 'http://localhost:4103/api';
 
 export const ThemeContext = createContext();
 export const UserContext = createContext();
@@ -62,6 +63,7 @@ const Sidebar = ({ user, onLogout, notificationCount }) => {
     { path: '/charts', icon: '📈', label: 'Charts & Analytics' },
     { path: '/search', icon: '🔍', label: 'Global Search' },
     { path: '/notifications', icon: '🔔', label: 'Notifications', badge: notificationCount },
+    { path: '/custom-views', icon: '🏗️', label: 'Mfg Views' },
   ];
 
   const securityItems = [
@@ -213,7 +215,7 @@ function App() {
   useEffect(() => {
     if (!user) return;
     const token = localStorage.getItem('token');
-    const ws = new WebSocket(`ws://localhost:3001/ws${token ? '?token=' + token : ''}`);
+    const ws = new WebSocket(`ws://localhost:4103/ws${token ? '?token=' + token : ''}`);
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
@@ -319,6 +321,7 @@ function App() {
             <Route path="/contact" element={protectedRoute(Contact)} />
             <Route path="/api-docs" element={protectedRoute(ApiDocs)} />
             <Route path="/ai-center" element={protectedRoute(AICenter)} />
+            <Route path="/custom-views" element={protectedRoute(CustomViewsPage)} />
             <Route path="*" element={<Navigate to={user ? "/dashboard" : "/login"} replace />} />
           </Routes>
         </Router>
