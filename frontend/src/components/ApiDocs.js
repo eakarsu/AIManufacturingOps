@@ -153,7 +153,7 @@ function ApiDocs() {
           Complete reference for all available API endpoints. All endpoints require
           authentication via JWT Bearer token unless otherwise noted. Base URL:{' '}
           <code style={{ background: '#1e293b', padding: '2px 8px', borderRadius: 4, color: '#60a5fa' }}>
-            http://localhost:3001/api
+            http://localhost:4103/api
           </code>
         </p>
       </div>

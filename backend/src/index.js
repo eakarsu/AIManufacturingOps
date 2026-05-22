@@ -2170,6 +2170,19 @@ try { const _gap_limited = require('./routes/gap-limited'); app.use('/api/gap-li
 // === End Batch 05 Mounts ===
 
 // =====================
+// ERP LAYER (AI-Native ERP routes)
+// =====================
+try { app.use('/api/erp/gl-chart-of-accounts', require('./routes/erpFeat_glChartOfAccounts')); console.log('[mount] /api/erp/gl-chart-of-accounts ready'); } catch (e) { console.error('ERP mount fail gl-chart-of-accounts:', e.message); }
+try { app.use('/api/erp/ap-ar', require('./routes/erpFeat_apAr')); console.log('[mount] /api/erp/ap-ar ready'); } catch (e) { console.error('ERP mount fail ap-ar:', e.message); }
+try { app.use('/api/erp/inventory-gl', require('./routes/erpFeat_inventoryGl')); console.log('[mount] /api/erp/inventory-gl ready'); } catch (e) { console.error('ERP mount fail inventory-gl:', e.message); }
+try { app.use('/api/erp/mrp', require('./routes/erpFeat_mrp')); console.log('[mount] /api/erp/mrp ready'); } catch (e) { console.error('ERP mount fail mrp:', e.message); }
+try { app.use('/api/erp/boms', require('./routes/erpFeat_boms')); console.log('[mount] /api/erp/boms ready'); } catch (e) { console.error('ERP mount fail boms:', e.message); }
+try { app.use('/api/erp/cost-accounting', require('./routes/erpFeat_costAccounting')); console.log('[mount] /api/erp/cost-accounting ready'); } catch (e) { console.error('ERP mount fail cost-accounting:', e.message); }
+try { app.use('/api/erp/consolidations', require('./routes/erpFeat_consolidations')); console.log('[mount] /api/erp/consolidations ready'); } catch (e) { console.error('ERP mount fail consolidations:', e.message); }
+try { app.use('/api/erp/multi-currency', require('./routes/erpFeat_multiCurrency')); console.log('[mount] /api/erp/multi-currency ready'); } catch (e) { console.error('ERP mount fail multi-currency:', e.message); }
+try { app.use('/api/erp/intercompany', require('./routes/erpFeat_intercompany')); console.log('[mount] /api/erp/intercompany ready'); } catch (e) { console.error('ERP mount fail intercompany:', e.message); }
+
+// =====================
 // CUSTOM VIEWS (mounted BEFORE 404 / error handler)
 // =====================
 try {
@@ -2177,6 +2190,13 @@ try {
   console.log('[mount] /api/custom-views ready');
 } catch (e) {
   console.error('Failed to mount customViews:', e.message);
+}
+
+try {
+  app.use('/api/scrap-rework-loop', authenticateToken, require('./routes/scrap-rework-loop'));
+  console.log('[mount] /api/scrap-rework-loop ready');
+} catch (e) {
+  console.error('Failed to mount scrap-rework-loop:', e.message);
 }
 
 // =====================

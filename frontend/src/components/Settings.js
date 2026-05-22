@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useContext } from 'react';
 import axios from 'axios';
 
-const API_URL = 'http://localhost:3001/api';
+const API_URL = 'http://localhost:4103/api';
 
 const Settings = ({ onThemeChange }) => {
   const [settings, setSettings] = useState({ theme: 'dark', email_notifications: true, push_notifications: false, language: 'en' });

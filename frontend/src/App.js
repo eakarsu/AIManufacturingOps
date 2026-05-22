@@ -29,6 +29,21 @@ import Contact from './components/Contact';
 import ApiDocs from './components/ApiDocs';
 import AICenter from './components/AICenter';
 import CustomViewsPage from './pages/CustomViewsPage';
+import ScrapReworkLoop from './components/ScrapReworkLoop';
+
+import CodexCustomVizFeature from './pages/CodexCustomVizFeature';
+import CodexOperationsFeature from './pages/CodexOperationsFeature';
+
+// ERP pages
+import GlChartOfAccountsPage from './pages/erp/GlChartOfAccountsPage';
+import ApArPage from './pages/erp/ApArPage';
+import InventoryGlPage from './pages/erp/InventoryGlPage';
+import MrpPage from './pages/erp/MrpPage';
+import BomsPage from './pages/erp/BomsPage';
+import CostAccountingPage from './pages/erp/CostAccountingPage';
+import ConsolidationsPage from './pages/erp/ConsolidationsPage';
+import MultiCurrencyPage from './pages/erp/MultiCurrencyPage';
+import IntercompanyPage from './pages/erp/IntercompanyPage';
 
 const API_URL = 'http://localhost:4103/api';
 
@@ -56,6 +71,7 @@ const Sidebar = ({ user, onLogout, notificationCount }) => {
     { path: '/safety', icon: '🛡️', label: 'Safety Predictor' },
     { path: '/assembly', icon: '🏭', label: 'Assembly Balancer' },
     { path: '/supply-chain', icon: '📦', label: 'Supply Chain' },
+    { path: '/scrap-rework-loop', icon: '♻', label: 'Scrap/Rework Loop' },
   ];
 
   const managementItems = [
@@ -71,6 +87,18 @@ const Sidebar = ({ user, onLogout, notificationCount }) => {
     { path: '/admin', icon: '👥', label: 'Admin Panel' },
     { path: '/file-upload', icon: '📎', label: 'File Upload' },
     { path: '/data-export', icon: '📤', label: 'Data Export' },
+  ];
+
+  const erpItems = [
+    { path: '/erp/gl-chart-of-accounts', icon: '📒', label: 'GL Chart of Accounts' },
+    { path: '/erp/ap-ar', icon: '🧾', label: 'AP / AR' },
+    { path: '/erp/inventory-gl', icon: '📦', label: 'Inventory GL' },
+    { path: '/erp/mrp', icon: '🔄', label: 'MRP' },
+    { path: '/erp/boms', icon: '🔩', label: 'Bills of Materials' },
+    { path: '/erp/cost-accounting', icon: '💰', label: 'Cost Accounting' },
+    { path: '/erp/consolidations', icon: '🏢', label: 'Consolidations' },
+    { path: '/erp/multi-currency', icon: '💱', label: 'Multi-Currency' },
+    { path: '/erp/intercompany', icon: '🔗', label: 'Intercompany' },
   ];
 
   const supportItems = [
@@ -115,6 +143,11 @@ const Sidebar = ({ user, onLogout, notificationCount }) => {
       <nav className="nav-section">
         <div className="nav-section-title">Security</div>
         {renderNavItems(securityItems)}
+      </nav>
+
+      <nav className="nav-section">
+        <div className="nav-section-title">ERP</div>
+        {renderNavItems(erpItems)}
       </nav>
 
       <nav className="nav-section">
@@ -295,6 +328,9 @@ function App() {
             }} />
           )}
           <Routes>
+        <Route path="/codex/custom-viz" element={<ProtectedRoute><CodexCustomVizFeature /></ProtectedRoute>} />
+        <Route path="/codex/operations" element={<ProtectedRoute><CodexOperationsFeature /></ProtectedRoute>} />
+
             <Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <Login onLogin={handleLogin} />} />
             <Route path="/register" element={user ? <Navigate to="/dashboard" replace /> : <Register onLogin={handleLogin} />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
@@ -322,6 +358,17 @@ function App() {
             <Route path="/api-docs" element={protectedRoute(ApiDocs)} />
             <Route path="/ai-center" element={protectedRoute(AICenter)} />
             <Route path="/custom-views" element={protectedRoute(CustomViewsPage)} />
+            <Route path="/scrap-rework-loop" element={protectedRoute(ScrapReworkLoop)} />
+            {/* ERP routes */}
+            <Route path="/erp/gl-chart-of-accounts" element={protectedRoute(GlChartOfAccountsPage)} />
+            <Route path="/erp/ap-ar" element={protectedRoute(ApArPage)} />
+            <Route path="/erp/inventory-gl" element={protectedRoute(InventoryGlPage)} />
+            <Route path="/erp/mrp" element={protectedRoute(MrpPage)} />
+            <Route path="/erp/boms" element={protectedRoute(BomsPage)} />
+            <Route path="/erp/cost-accounting" element={protectedRoute(CostAccountingPage)} />
+            <Route path="/erp/consolidations" element={protectedRoute(ConsolidationsPage)} />
+            <Route path="/erp/multi-currency" element={protectedRoute(MultiCurrencyPage)} />
+            <Route path="/erp/intercompany" element={protectedRoute(IntercompanyPage)} />
             <Route path="*" element={<Navigate to={user ? "/dashboard" : "/login"} replace />} />
           </Routes>
         </Router>
