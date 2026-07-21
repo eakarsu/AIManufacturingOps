@@ -1,0 +1,15 @@
+name: governed-workflow
+on: [push, pull_request]
+permissions: { contents: read }
+jobs:
+  dependency-free-governance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node --test backend/src/governance/*.test.cjs
+      - run: find backend/src/governance backend/src/middleware -type f \( -name '*.js' -o -name '*.cjs' \) -print0 | xargs -0 -n1 node --check
+      - run: node --check backend/src/index.js
+      - run: for f in backend/src/routes/erpFeat_*.js; do node --check "$f"; done
+      - run: bash -n start.sh

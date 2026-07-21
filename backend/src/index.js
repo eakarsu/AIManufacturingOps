@@ -16,6 +16,11 @@ const pool = require('./db');
 const initDatabase = require('./initDb');
 const openRouterService = require('./services/openRouterService');
 const { sendPasswordReset } = require('./services/emailService');
+const { validateRuntime } = require('./governance/runtime');
+const governanceRouter = require('./governance/router');
+const { createProviderGate } = require('./governance/providerGate');
+
+validateRuntime();
 
 const app = express();
 const server = http.createServer(app);
@@ -28,8 +33,10 @@ const statsCache = new NodeCache({ stdTTL: 60 });
 // SECURITY MIDDLEWARE
 // =====================
 app.use(helmet());
-app.use(cors({ origin: ['http://localhost:3000', 'http://localhost:4001'], credentials: true }));
+const allowedOrigins = String(process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:4001').split(',').map((value) => value.trim()).filter(Boolean);
+app.use(cors({ origin:(origin,callback)=>!origin||allowedOrigins.includes(origin)?callback(null,true):callback(new Error('Origin not allowed by CORS')),credentials:true }));
 app.use(express.json({ limit: '10mb' }));
+app.use(createProviderGate(['/api/ai']));
 
 // General rate limiter
 const generalLimiter = rateLimit({
@@ -112,7 +119,7 @@ const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Access denied' });
-  jwt.verify(token, process.env.JWT_SECRET || 'secret', (err, user) => {
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) return res.status(403).json({ error: 'Invalid token' });
     req.user = user;
     next();
@@ -138,7 +145,7 @@ const logAudit = async (userId, userEmail, action, entityType, entityId, details
 };
 
 // Initialize database on startup
-initDatabase().catch(console.error);
+if (process.env.ENABLE_LEGACY_SCHEMA_BOOTSTRAP === 'true') initDatabase().catch(console.error);
 
 // =====================
 // HEALTH CHECK
@@ -160,7 +167,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (!validPassword) return res.status(401).json({ error: 'Invalid credentials' });
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role, name: user.name },
-      process.env.JWT_SECRET || 'secret',
+      process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
     await logAudit(user.id, user.email, 'LOGIN', 'user', user.id, 'User logged in', req.ip);
@@ -190,7 +197,7 @@ app.post('/api/auth/register',
       const user = result.rows[0];
       const token = jwt.sign(
         { id: user.id, email: user.email, role: user.role, name: user.name },
-        process.env.JWT_SECRET || 'secret',
+        process.env.JWT_SECRET,
         { expiresIn: '24h' }
       );
       await logAudit(user.id, user.email, 'REGISTER', 'user', user.id, 'New user registered', req.ip);
@@ -266,7 +273,7 @@ app.post('/api/auth/verify-email/:token', async (req, res) => {
 app.post('/api/auth/refresh', authenticateToken, (req, res) => {
   const token = jwt.sign(
     { id: req.user.id, email: req.user.email, role: req.user.role, name: req.user.name },
-    process.env.JWT_SECRET || 'secret',
+    process.env.JWT_SECRET,
     { expiresIn: '24h' }
   );
   res.json({ token });
@@ -2064,7 +2071,7 @@ wss.on('connection', (ws, req) => {
   const token = url.searchParams.get('token');
   if (token) {
     try {
-      const user = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+      const user = jwt.verify(token, process.env.JWT_SECRET);
       wsClients.set(ws, user);
       ws.send(JSON.stringify({ type: 'connected', message: 'WebSocket connected' }));
     } catch (e) {
@@ -2155,19 +2162,7 @@ app.use('/api/ai/oee-anomaly-stream', require('./routes/oee-anomaly-stream'));
 app.use('/api/ai/digital-twin', require('./routes/digital-twin'));
 app.use('/api/ai/supplier-risk-monitor', require('./routes/supplier-risk-monitor'));
 
-// === Batch 05 Gaps & Frontend Mounts ===
-try { const _gap_ai_production_schedule_optimizer = require('./routes/gap-ai-production-schedule-optimizer'); app.use('/api/gap-ai-production-schedule-optimizer', _gap_ai_production_schedule_optimizer); } catch(e) { console.error('gap mount fail ai-production-schedule-optimizer:', e.message); }
-try { const _gap_ai_energy_consumption_forecast = require('./routes/gap-ai-energy-consumption-forecast'); app.use('/api/gap-ai-energy-consumption-forecast', _gap_ai_energy_consumption_forecast); } catch(e) { console.error('gap mount fail ai-energy-consumption-forecast:', e.message); }
-try { const _gap_ai_maintenance_windowing = require('./routes/gap-ai-maintenance-windowing'); app.use('/api/gap-ai-maintenance-windowing', _gap_ai_maintenance_windowing); } catch(e) { console.error('gap mount fail ai-maintenance-windowing:', e.message); }
-try { const _gap_ai_workforce_skill_gap = require('./routes/gap-ai-workforce-skill-gap'); app.use('/api/gap-ai-workforce-skill-gap', _gap_ai_workforce_skill_gap); } catch(e) { console.error('gap mount fail ai-workforce-skill-gap:', e.message); }
-try { const _gap_nested = require('./routes/gap-nested'); app.use('/api/gap-nested', _gap_nested); } catch(e) { console.error('gap mount fail nested:', e.message); }
-try { const _gap_substantive = require('./routes/gap-substantive'); app.use('/api/gap-substantive', _gap_substantive); } catch(e) { console.error('gap mount fail substantive:', e.message); }
-try { const _gap_webhooks = require('./routes/gap-webhooks'); app.use('/api/gap-webhooks', _gap_webhooks); } catch(e) { console.error('gap mount fail webhooks:', e.message); }
-try { const _gap_real_time = require('./routes/gap-real-time'); app.use('/api/gap-real-time', _gap_real_time); } catch(e) { console.error('gap mount fail real-time:', e.message); }
-try { const _gap_mobile = require('./routes/gap-mobile'); app.use('/api/gap-mobile', _gap_mobile); } catch(e) { console.error('gap mount fail mobile:', e.message); }
-try { const _gap_customer_order_side = require('./routes/gap-customer-order-side'); app.use('/api/gap-customer-order-side', _gap_customer_order_side); } catch(e) { console.error('gap mount fail customer-order-side:', e.message); }
-try { const _gap_limited = require('./routes/gap-limited'); app.use('/api/gap-limited', _gap_limited); } catch(e) { console.error('gap mount fail limited:', e.message); }
-// === End Batch 05 Mounts ===
+// Generated gap routes are quarantined: no mounts until durable provider contracts and acceptance tests exist.
 
 // =====================
 // ERP LAYER (AI-Native ERP routes)
@@ -2198,6 +2193,8 @@ try {
 } catch (e) {
   console.error('Failed to mount scrap-rework-loop:', e.message);
 }
+
+app.use('/api/governed-production-dispatch', governanceRouter);
 
 // =====================
 // 404 HANDLER (after all mounts)
