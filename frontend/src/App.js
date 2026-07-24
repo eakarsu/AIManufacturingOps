@@ -45,7 +45,7 @@ import ConsolidationsPage from './pages/erp/ConsolidationsPage';
 import MultiCurrencyPage from './pages/erp/MultiCurrencyPage';
 import IntercompanyPage from './pages/erp/IntercompanyPage';
 
-const API_URL = 'http://localhost:4103/api';
+const API_URL = process.env.REACT_APP_API_URL || '/api';
 
 export const ThemeContext = createContext();
 export const UserContext = createContext();

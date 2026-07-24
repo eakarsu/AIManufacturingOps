@@ -2,8 +2,6 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BACKEND_PORT="${BACKEND_PORT:-4103}"
-FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 CHILD_PIDS=()
 
 require_file() { [ -f "$1" ] || { echo "Missing required file: $1" >&2; exit 1; }; }
@@ -18,6 +16,12 @@ cleanup() { for pid in "${CHILD_PIDS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/
 trap cleanup INT TERM EXIT
 
 require_file "$PROJECT_DIR/.env"
+set -a
+# shellcheck disable=SC1091
+. "$PROJECT_DIR/.env"
+set +a
+BACKEND_PORT="${BACKEND_PORT:-4103}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 require_dir "$PROJECT_DIR/backend/node_modules"
 require_dir "$PROJECT_DIR/frontend/node_modules"
 port_free "$BACKEND_PORT"
@@ -25,7 +29,7 @@ port_free "$FRONTEND_PORT"
 
 (cd "$PROJECT_DIR/backend" && BACKEND_PORT="$BACKEND_PORT" node src/index.js) &
 CHILD_PIDS+=("$!")
-(cd "$PROJECT_DIR/frontend" && PORT="$FRONTEND_PORT" BROWSER=none npm start) &
+(cd "$PROJECT_DIR/frontend" && PORT="$FRONTEND_PORT" REACT_APP_API_URL="http://127.0.0.1:$BACKEND_PORT/api" BROWSER=none npm start) &
 CHILD_PIDS+=("$!")
 
 echo "Manufacturing services started without installing, seeding, migrating, or reclaiming ports."

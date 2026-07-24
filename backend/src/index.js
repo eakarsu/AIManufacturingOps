@@ -36,7 +36,13 @@ app.use(helmet());
 const allowedOrigins = String(process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:4001').split(',').map((value) => value.trim()).filter(Boolean);
 app.use(cors({ origin:(origin,callback)=>!origin||allowedOrigins.includes(origin)?callback(null,true):callback(new Error('Origin not allowed by CORS')),credentials:true }));
 app.use(express.json({ limit: '10mb' }));
-app.use(createProviderGate(['/api/ai']));
+app.use(createProviderGate([
+  '/api/ai/production-planner-agent',
+  '/api/ai/vision-quality-inspect',
+  '/api/ai/oee-anomaly-stream',
+  '/api/ai/digital-twin',
+  '/api/ai/supplier-risk-monitor'
+]));
 
 // General rate limiter
 const generalLimiter = rateLimit({
