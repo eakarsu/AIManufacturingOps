@@ -221,7 +221,7 @@ const seedData = async () => {
     `);
 
     console.log('All seed data inserted successfully!');
-    console.log('Default login: admin@manufacturing.com / admin123');
+    console.log('Demo login users provisioned from the local environment.');
 
   } catch (error) {
     console.error('Error seeding data:', error);

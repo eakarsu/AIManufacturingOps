@@ -31,8 +31,8 @@ const Login = ({ onLogin }) => {
       setEmail(response.data.email);
       setPassword(response.data.password);
     } catch (err) {
-      setEmail('admin@manufacturing.com');
-      setPassword('admin123');
+      setEmail(process.env.REACT_APP_DEMO_EMAIL || '');
+      setPassword(process.env.REACT_APP_DEMO_PASSWORD || '');
     }
   };
 
