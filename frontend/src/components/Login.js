@@ -76,7 +76,7 @@ const Login = ({ onLogin }) => {
           </button>
 
           <button type="button" className="auto-fill-btn" onClick={handleAutoFill}>
-            Auto-fill Demo Credentials
+            Auto Fill Demo Credentials
           </button>
         </form>
 
